@@ -1,7 +1,7 @@
 import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
 import network from 'network';
 import { bindNodeCallback, of, partition, from, concat, EMPTY } from 'rxjs';
-import { tap, flatMap, filter, mapTo, share, map, distinct } from 'rxjs/operators';
+import { tap, mergeMap, filter, mapTo, share, map, distinct } from 'rxjs/operators';
 import ping from 'ping';
 import calculateNetwork from 'network-calculator';
 import getIpRange from 'get-ip-range';
@@ -9,11 +9,19 @@ import arp from 'node-arp';
 
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { ModernFormsPlatformAccessory } from './platformAccessory';
-import { ModernFormsHttpClient } from './utils/client';
+import {ResponsePayload} from './types';
+import axios from 'axios';
+
+interface FanConfig {
+
+  ip: string
+  light?: boolean
+
+}
 
 interface Config extends PlatformConfig {
   autoDiscover?: boolean
-  fans?: Array<{ ip: string }>
+  fans?: Array<FanConfig>
 }
 
 export class ModernFormsPlatform implements DynamicPlatformPlugin {
@@ -34,6 +42,13 @@ export class ModernFormsPlatform implements DynamicPlatformPlugin {
     });
   }
 
+  async ping(ip: string) {
+    return axios
+      .post<ResponsePayload>(`http://${ip}/mf`, {queryDynamicShadowData: 1})
+      .then(res => res.data);
+  }
+
+
   configureAccessory(accessory: PlatformAccessory) {
     this.log.info('Loading accessory from cache:', accessory.displayName);
     this.accessories.push(accessory);
@@ -45,41 +60,40 @@ export class ModernFormsPlatform implements DynamicPlatformPlugin {
     const getActiveInterface = bindNodeCallback(network.get_active_interface);
     const getMAC = bindNodeCallback(arp.getMAC.bind(arp));
 
-    const cachedIpAddresses$ = from(this.accessories ?? []).pipe(
-      map(accessory => accessory.context.device.ip),
-      tap(ip => this.log.debug('Found potential IP address from cached devices:', ip)),
+    const cachedFansAddresses$ = from(this.accessories ?? []).pipe(
+      map(accessory => accessory.context.device),
+      tap(fan => this.log.debug('Found potential IP address from cached devices:', fan.ip)),
     );
 
-    const configIpAddresses$ = from(this.config.fans ?? []).pipe(
-      map(fan => fan.ip),
-      tap(ip => this.log.debug('Found potential IP address from config:', ip)),
+    const configFansAddresses$ = from(this.config.fans ?? []).pipe(
+      tap(fan => this.log.debug('Found potential IP address from config:', fan.ip)),
     );
 
-    const networkIpAddresses$ = of(this.config.autoDiscover).pipe(
-      flatMap(autoDiscover => autoDiscover === false ? EMPTY : getActiveInterface()),
+    const networkFansAddresses$ = of(this.config.autoDiscover).pipe(
+      mergeMap(autoDiscover => autoDiscover === false ? EMPTY : getActiveInterface()),
       tap(() => this.log.debug('Searching network for Modern Forms fans')),
       map(int => calculateNetwork(int.ip_address ?? '192.168.0.1', int.netmask ?? '255.255.255.0')),
       map(network => network.network + '/' + network.bitmask),
-      flatMap(subnet => getIpRange(subnet)),
-      flatMap(ip => ping.promise.probe(ip).then(() => ip)),
-      flatMap(ip => getMAC(ip).pipe(
+      mergeMap(subnet => getIpRange(subnet)),
+      mergeMap(ip => ping.promise.probe(ip).then(() => ip)),
+      mergeMap(ip => getMAC(ip).pipe(
         map(mac => mac?.toUpperCase() ?? ''),
         filter(mac => mac.startsWith('C8:93:46')),
-        mapTo(ip),
+        mapTo({ ip: ip, light: true }),
       )),
-      tap(ip => this.log.debug('Found potential IP address from network and filtering by MAC vendor:', ip)),
+      tap(fan => this.log.debug('Found potential IP address from network and filtering by MAC vendor:', fan.ip)),
     );
 
-    const devices$ = concat(cachedIpAddresses$, configIpAddresses$, networkIpAddresses$).pipe(
+    const devices$ = concat(cachedFansAddresses$, configFansAddresses$, networkFansAddresses$).pipe(
       distinct(),
-      flatMap(ip => of(new ModernFormsHttpClient(ip)).pipe(
-        flatMap(client => client.get().then(res => res.clientId).catch(() => null)),
+      mergeMap(fan => of(fan).pipe(
+        mergeMap(fan => this.ping(fan.ip).then(res => res.clientId).catch(() => null)),
         filter((clientId): clientId is string => clientId !== null),
-        tap(clientId => this.log.info(`Found device at ${ip} with client ID of ${clientId}`)),
+        tap(clientId => this.log.info(`Found device at ${fan.ip} with client ID of ${clientId}`)),
         map(clientId => {
           const uuid = this.api.hap.uuid.generate(clientId);
           const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
-          return { ip, clientId, uuid, existingAccessory };
+          return { fan, clientId, uuid, existingAccessory };
         }),
       )),
       share(),
@@ -90,10 +104,10 @@ export class ModernFormsPlatform implements DynamicPlatformPlugin {
       device => !device.existingAccessory,
     );
 
-    newDevices$.subscribe(({ uuid, ip, clientId }) => {
+    newDevices$.subscribe(({ uuid, fan, clientId }) => {
       this.log.info('Adding new accessory:', clientId);
       const accessory = new this.api.platformAccessory(clientId, uuid);
-      accessory.context.device = { uuid, ip, clientId };
+      accessory.context.device = { uuid, ip: fan.ip, light: fan.light, clientId };
       new ModernFormsPlatformAccessory(this, accessory);
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
     });

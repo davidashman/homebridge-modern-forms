@@ -1,15 +1,15 @@
 {
-  "displayName": "Modern Forms",
-  "name": "homebridge-modern-forms",
-  "version": "1.0.8",
+  "displayName": "Modern Forms Fans",
+  "name": "homebridge-modern-forms-fans",
+  "version": "1.0.10",
   "description": "Add Modern Forms fans to your Home app using Homebridge.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git://github.com/nickbreaton/homebridge-modern-forms.git"
+    "url": "git://github.com/davidashman/homebridge-modern-forms.git"
   },
   "bugs": {
-    "url": "https://github.com/nickbreaton/homebridge-modern-forms/issues"
+    "url": "https://github.com/davidashman/homebridge-modern-forms/issues"
   },
   "engines": {
     "node": ">=10.17.0",
@@ -44,7 +44,7 @@
     "@typescript-eslint/eslint-plugin": "^3.10.1",
     "@typescript-eslint/parser": "^3.10.1",
     "eslint": "^7.7.0",
-    "homebridge": "^1.1.2",
+    "homebridge": "^1.6.0",
     "nodemon": "^2.0.4",
     "rimraf": "^3.0.2",
     "ts-node": "^9.0.0",

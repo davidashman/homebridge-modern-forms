@@ -1,15 +1,24 @@
-import { Service, PlatformAccessory, CharacteristicValue, CharacteristicSetCallback, CharacteristicGetCallback } from 'homebridge';
+import { Service, PlatformAccessory, CharacteristicValue } from 'homebridge';
 
 import { ModernFormsPlatform } from './platform';
-import { ModernFormsHttpClient } from './utils/client';
+import { RequestPayload, ResponsePayload } from './types';
+import axios from 'axios';
 
 const NUMBER_OF_FAN_SPEEDS = 6;
 
 export class ModernFormsPlatformAccessory {
-  private client: ModernFormsHttpClient;
 
+  private updateTimer!: NodeJS.Timeout;
   private fanService: Service;
-  private lightService: Service;
+  private lightService?: Service;
+  private states: ResponsePayload = {
+    fanOn: false,
+    fanSpeed: 0,
+    fanDirection: 'forward',
+    lightOn: false,
+    lightBrightness: 0,
+    clientId: this.device().clientId,
+  }
 
   constructor(
     private readonly platform: ModernFormsPlatform,
@@ -18,9 +27,7 @@ export class ModernFormsPlatformAccessory {
       this.accessory.getService(this.platform.Service.AccessoryInformation)!
         .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Modern Forms')
         .setCharacteristic(this.platform.Characteristic.Model, 'Unknown')
-        .setCharacteristic(this.platform.Characteristic.SerialNumber, this.accessory.context.device.clientId);
-
-      this.client = new ModernFormsHttpClient(this.accessory.context.device.ip);
+        .setCharacteristic(this.platform.Characteristic.SerialNumber, this.device().clientId);
 
       // FAN SERVICE
 
@@ -29,138 +36,128 @@ export class ModernFormsPlatformAccessory {
         this.accessory.addService(this.platform.Service.Fan);
 
       this.fanService.setCharacteristic(this.platform.Characteristic.Name, accessory.context.device.ip);
-
       this.fanService.getCharacteristic(this.platform.Characteristic.On)
-        .on('set', this.setFanOn.bind(this))
-        .on('get', this.getFanOn.bind(this));
-
+        .onGet(this.getFanOn.bind(this))
+        .onSet(this.setFanOn.bind(this));
       this.fanService.getCharacteristic(this.platform.Characteristic.RotationSpeed)
-        .on('set', this.setRotationSpeed.bind(this))
-        .on('get', this.getRotationSpeed.bind(this))
+        .onSet(this.setRotationSpeed.bind(this))
         .setProps({ minStep: this.getStepWithoutGoingOver(6) });
-
       this.fanService.getCharacteristic(this.platform.Characteristic.RotationDirection)
-        .on('set', this.setRotationDirection.bind(this))
-        .on('get', this.getRotationDirection.bind(this));
+        .onSet(this.setRotationDirection.bind(this));
 
       // LIGHT SERVICE
+      if (this.device().light) {
+        this.lightService =
+          this.accessory.getService(this.platform.Service.Lightbulb) ??
+          this.accessory.addService(this.platform.Service.Lightbulb);
 
-      this.lightService =
-        this.accessory.getService(this.platform.Service.Lightbulb) ??
-        this.accessory.addService(this.platform.Service.Lightbulb);
+        this.lightService.setCharacteristic(this.platform.Characteristic.Name, accessory.context.device.ip);
+        this.lightService.getCharacteristic(this.platform.Characteristic.On).onSet( this.setLightOn.bind(this));
+        this.lightService.getCharacteristic(this.platform.Characteristic.Brightness).onSet( this.setBrightness.bind(this));
+      } else {
+        const oldLightService = this.accessory.getService(this.platform.Service.Lightbulb);
+        if (oldLightService ) {
+          this.accessory.removeService(oldLightService);
+        }
+      }
 
-      this.lightService.setCharacteristic(this.platform.Characteristic.Name, accessory.context.device.ip);
+      setImmediate(this.poll.bind(this));
+      setInterval(this.poll.bind(this), (this.platform.config.pollingInterval || 15) * 1000);
+  }
 
-      this.lightService.getCharacteristic(this.platform.Characteristic.On)
-        .on('set', this.setLightOn.bind(this))
-        .on('get', this.getLightOn.bind(this));
+  device() {
+    return this.accessory.context.device;
+  }
 
-      this.lightService.getCharacteristic(this.platform.Characteristic.Brightness)
-        .on('get', this.getBrightness.bind(this))
-        .on('set', this.setBrightness.bind(this));
+  async request(payload: RequestPayload & { queryDynamicShadowData?: 1 }) {
+    return axios
+      .post<ResponsePayload>(`http://${this.device().ip}/mf`, payload)
+      .then(res => res.data);
   }
 
   // HELPERS
+  poll() {
+    this.platform.log.info(`Requesting updates from ${this.device().clientId} at IP ${this.device().ip}...`);
+    this.request({ queryDynamicShadowData: 1 })
+      .then(this.updateStates.bind(this))
+      .catch(error => {
+        this.platform.log.info(`Failed to get status of ${this.device().clientId} at IP ${this.device().ip}: ${error.message}`);
+      });
+  }
+
+  updateStates(data : ResponsePayload) {
+    this.platform.log.info(`Updating states for ${this.device().clientId}: ${JSON.stringify(data)}`);
+    this.states = data;
+    this.fanService.getCharacteristic(this.platform.Characteristic.On).updateValue(data.fanOn);
+    this.fanService.getCharacteristic(this.platform.Characteristic.RotationSpeed).updateValue(data.fanSpeed * 100 / NUMBER_OF_FAN_SPEEDS);
+    this.fanService.getCharacteristic(this.platform.Characteristic.RotationDirection).updateValue(data.fanDirection === 'forward' ? 0 : 1);
+
+    if (this.lightService) {
+      this.lightService.getCharacteristic(this.platform.Characteristic.On).updateValue(data.lightOn);
+      this.lightService.getCharacteristic(this.platform.Characteristic.Brightness).updateValue(data.lightBrightness);
+    }
+  }
+
+  sendUpdate() {
+    if (this.updateTimer) {
+      clearTimeout(this.updateTimer);
+    }
+
+    this.platform.log.info(`Staging update to ${this.device().clientId}...`);
+    this.updateTimer = setTimeout(() => {
+      this.platform.log.info(`Sending update to ${this.device().clientId}...`);
+      this.request(this.states)
+        .then(this.updateStates.bind(this))
+        .catch((error) => this.platform.log.info(`Failed to update fan states: ${error.message}`));
+    }, 500);
+  }
 
   getStepWithoutGoingOver = (steps: number) => {
     return Math.floor(100 / steps * 1000) / 1000;
   }
 
-  debug = (...args: unknown[]) => {
-    this.platform.log.debug(`[${this.accessory.context.device.ip}]`, ...args);
+  log = (...args: unknown[]) => {
+    this.platform.log.info(`[${this.device().ip}]`, ...args);
   }
 
   // FAN GETTERS / SETTERS
 
-  getFanOn(callback: CharacteristicGetCallback) {
-    this.debug('Get Fan Characteristic On');
-
-    this.client.get()
-      .then(data => callback(null, data.fanOn))
-      .catch(callback);
+  async getFanOn() {
+    this.log('Get Fan Characteristic On');
+    return this.states.fanOn;
   }
 
-  setFanOn(value: CharacteristicValue, callback: CharacteristicSetCallback) {
-    this.debug('Set Fan Characteristic On ->', value);
-
-    this.client.update({ fanOn: Boolean(value) })
-      .then(() => callback(null))
-      .catch(callback);
+  async setFanOn(value: CharacteristicValue) {
+    this.log('Set Fan Characteristic On ->', value);
+    this.states.fanOn = Boolean(value);
+    this.sendUpdate();
   }
 
-  getRotationSpeed(callback: CharacteristicGetCallback) {
-    this.debug('Get Fan Characteristic On');
-
-    this.client.get()
-      .then(data => callback(null, data.fanSpeed * 100 / NUMBER_OF_FAN_SPEEDS))
-      .catch(callback);
+  async setRotationDirection(value: CharacteristicValue) {
+    this.log('Set Fan Characteristic On ->', value);
+    this.states.fanDirection = value === 0 ? 'forward' : 'reverse';
+    this.sendUpdate();
   }
 
-  setRotationDirection(value: CharacteristicValue, callback: CharacteristicSetCallback) {
-    this.debug('Set Fan Characteristic On ->', value);
-
-    this.client.update({
-      fanDirection: value === 0 ? 'forward' : 'reverse',
-    })
-      .then(() => callback(null))
-      .catch(callback);
-  }
-
-  getRotationDirection(callback: CharacteristicGetCallback) {
-    this.debug('Get Fan Characteristic On');
-
-    this.client.get()
-      .then(data => callback(null, data.fanDirection === 'forward' ? 0 : 1))
-      .catch(callback);
-  }
-
-  setRotationSpeed(value: CharacteristicValue, callback: CharacteristicSetCallback) {
-    this.debug('Set Fan Characteristic On ->', value);
-
-    const fanSpeed = Math.round(value as number / 100 * NUMBER_OF_FAN_SPEEDS);
-
-    this.client.update({
-      fanOn: fanSpeed > 0,
-      fanSpeed,
-    })
-      .then(() => callback(null))
-      .catch(callback);
+  async setRotationSpeed(value: CharacteristicValue) {
+    this.log('Set Fan Characteristic On ->', value);
+    this.states.fanOn = value > 0;
+    this.states.fanSpeed = Math.round(value as number / 100 * NUMBER_OF_FAN_SPEEDS);
+    this.sendUpdate();
   }
 
   // LIGHT GETTERS / SETTERS
 
-  getLightOn(callback: CharacteristicGetCallback) {
-    this.debug('Get Light Characteristic On');
-
-    this.client.get()
-      .then(data => callback(null, data.lightOn))
-      .catch(callback);
+  async setLightOn(value: CharacteristicValue) {
+    this.log('Set Light Characteristic On ->', value);
+    this.states.lightOn = Boolean(value);
+    this.sendUpdate();
   }
 
-  setLightOn(value: CharacteristicValue, callback: CharacteristicSetCallback) {
-    this.debug('Set Light Characteristic On ->', value);
-
-    this.client.update({ lightOn: Boolean(value) })
-      .then(() => callback(null))
-      .catch(callback);
-  }
-
-  getBrightness(callback: CharacteristicSetCallback) {
-    this.debug('Get Characteristic Brightness');
-
-    this.client.get()
-      .then(data => callback(null, data.lightBrightness))
-      .catch(callback);
-  }
-
-  setBrightness(value: CharacteristicValue, callback: CharacteristicSetCallback) {
-    this.debug('Set Characteristic Brightness -> ', value);
-
-    this.client.update({
-      lightOn: value > 0,
-      lightBrightness: value as number,
-    })
-      .then(() => callback(null))
-      .catch(callback);
+  async setBrightness(value: CharacteristicValue) {
+    this.log('Set Characteristic Brightness -> ', value);
+    this.states.lightOn = value > 0;
+    this.states.lightBrightness = value as number;
+    this.sendUpdate();
   }
 }

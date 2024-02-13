@@ -1,5 +1,5 @@
 {
-  "pluginAlias": "ModernForms",
+  "pluginAlias": "ModernFormsFans",
   "pluginType": "platform",
   "singular": true,
   "schema": {
@@ -10,6 +10,13 @@
         "description": "Disable automatic discovery of fans on your local network.",
         "type": "boolean",
         "default": true,
+        "required": false
+      },
+      "pollingInterval": {
+        "title": "Polling Interval",
+        "description": "Defines how often (in seconds) fans are queried for state on the network.",
+        "type": "number",
+        "default": 15,
         "required": false
       },
       "fans": {
@@ -25,6 +32,12 @@
               "type": "string",
               "required": true,
               "format": "ipv4"
+            },
+            "light": {
+              "title": "Light",
+              "type": "boolean",
+              "required": false,
+              "default": true
             }
           }
         }
