@@ -11,11 +11,13 @@ import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { ModernFormsPlatformAccessory } from './platformAccessory';
 import {ResponsePayload} from './types';
 import axios from 'axios';
+import mqtt, {MqttClient} from 'mqtt';
 
 interface FanConfig {
 
   ip: string
   light?: boolean
+  switch?: string
 
 }
 
@@ -28,6 +30,7 @@ export class ModernFormsPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service = this.api.hap.Service;
   public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
   public readonly accessories: PlatformAccessory[] = [];
+  public readonly mqtt!: MqttClient;
 
   constructor(
     public readonly log: Logger,
@@ -35,6 +38,10 @@ export class ModernFormsPlatform implements DynamicPlatformPlugin {
     public readonly api: API,
   ) {
     this.log.debug('Finished initializing platform:', this.config.name);
+
+    if (this.config.mqttUrl) {
+      this.mqtt = mqtt.connect(this.config.mqttUrl);
+    }
 
     this.api.on('didFinishLaunching', () => {
       this.log.debug('Executed didFinishLaunching callback');
@@ -107,13 +114,14 @@ export class ModernFormsPlatform implements DynamicPlatformPlugin {
     newDevices$.subscribe(({ uuid, fan, clientId }) => {
       this.log.info('Adding new accessory:', clientId);
       const accessory = new this.api.platformAccessory(clientId, uuid);
-      accessory.context.device = { uuid, ip: fan.ip, light: fan.light, clientId };
+      accessory.context.device = { uuid, ip: fan.ip, light: fan.light, switch: fan.switch, clientId };
       new ModernFormsPlatformAccessory(this, accessory);
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
     });
 
-    existingDevices$.subscribe(({ clientId, existingAccessory }) => {
+    existingDevices$.subscribe(({ uuid, fan, clientId, existingAccessory }) => {
       this.log.info('Restoring existing accessory from cache:', clientId);
+      existingAccessory!.context.device = { uuid, ip: fan.ip, light: fan.light, switch: fan.switch, clientId };
       new ModernFormsPlatformAccessory(this, existingAccessory!);
     });
   }

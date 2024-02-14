@@ -61,6 +61,24 @@ export class ModernFormsPlatformAccessory {
         }
       }
 
+      if (this.device().switch) {
+        const mqttTopic = `stat/${this.device().switch}/RESULT`;
+        this.log(`Subscribing to messages on topic ${mqttTopic}...`);
+        this.platform.mqtt.subscribe(mqttTopic);
+        this.platform.mqtt.on('message', (topic, message) => {
+          this.log(`Got message from topic ${topic}`);
+          if (topic === mqttTopic) {
+            const data = JSON.parse(message.toString());
+            this.log(`Message: ${JSON.stringify(data)}`);
+            if (data.Button1?.Action === 'SINGLE') {
+              this.log('Toggle fan on from MQTT');
+              this.states.fanOn = !this.states.fanOn;
+              this.sendUpdate();
+            }
+          }
+        });
+      }
+
       setImmediate(this.poll.bind(this));
       setInterval(this.poll.bind(this), (this.platform.config.pollingInterval || 15) * 1000);
   }
@@ -89,12 +107,20 @@ export class ModernFormsPlatformAccessory {
     this.platform.log.info(`Updating states for ${this.device().clientId}: ${JSON.stringify(data)}`);
     this.states = data;
     this.fanService.getCharacteristic(this.platform.Characteristic.On).updateValue(data.fanOn);
+    this.updateLed();
     this.fanService.getCharacteristic(this.platform.Characteristic.RotationSpeed).updateValue(data.fanSpeed * 100 / NUMBER_OF_FAN_SPEEDS);
     this.fanService.getCharacteristic(this.platform.Characteristic.RotationDirection).updateValue(data.fanDirection === 'forward' ? 0 : 1);
 
     if (this.lightService) {
       this.lightService.getCharacteristic(this.platform.Characteristic.On).updateValue(data.lightOn);
       this.lightService.getCharacteristic(this.platform.Characteristic.Brightness).updateValue(data.lightBrightness);
+    }
+  }
+
+  updateLed() {
+    if (this.device().switch) {
+      const mqttTopic = `cmnd/${this.device().switch}/LedPower`;
+      this.platform.mqtt.publish(mqttTopic, this.states.fanOn ? 'ON' : 'OFF');
     }
   }
 

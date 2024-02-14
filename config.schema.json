@@ -19,6 +19,12 @@
         "default": 15,
         "required": false
       },
+      "mqttUrl": {
+        "title": "MQTT Server URL",
+        "description": "Configure MQTT server for switch notifications",
+        "type": "string",
+        "required": false
+      },
       "fans": {
         "title": "Fans",
         "description": "(optional) Fans will be automatically discovered.",
@@ -38,6 +44,11 @@
               "type": "boolean",
               "required": false,
               "default": true
+            },
+            "switch": {
+              "title": "Switch Topic",
+              "type": "string",
+              "required": false
             }
           }
         }
