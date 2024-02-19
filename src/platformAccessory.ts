@@ -80,7 +80,6 @@ export class ModernFormsPlatformAccessory {
       }
 
       setImmediate(this.poll.bind(this));
-      setInterval(this.poll.bind(this), (this.platform.config.pollingInterval || 15) * 1000);
   }
 
   device() {
@@ -100,6 +99,9 @@ export class ModernFormsPlatformAccessory {
       .then(this.updateStates.bind(this))
       .catch(error => {
         this.platform.log.info(`Failed to get status of ${this.device().clientId} at IP ${this.device().ip}: ${error.message}`);
+      })
+      .finally(() => {
+        setTimeout(this.poll.bind(this), (this.platform.config.pollingInterval || 5) * 1000);
       });
   }
 
@@ -125,17 +127,19 @@ export class ModernFormsPlatformAccessory {
   }
 
   sendUpdate() {
+    this.platform.log.info(`Sending update to ${this.device().clientId}...`);
+    this.request(this.states)
+      .then(this.updateStates.bind(this))
+      .catch((error) => this.platform.log.info(`Failed to update fan states: ${error.message}`));
+  }
+
+  sendDelayedUpdate() {
     if (this.updateTimer) {
       clearTimeout(this.updateTimer);
     }
 
     this.platform.log.info(`Staging update to ${this.device().clientId}...`);
-    this.updateTimer = setTimeout(() => {
-      this.platform.log.info(`Sending update to ${this.device().clientId}...`);
-      this.request(this.states)
-        .then(this.updateStates.bind(this))
-        .catch((error) => this.platform.log.info(`Failed to update fan states: ${error.message}`));
-    }, 500);
+    this.updateTimer = setTimeout(this.sendUpdate.bind(this), 500);
   }
 
   getStepWithoutGoingOver = (steps: number) => {
@@ -169,7 +173,7 @@ export class ModernFormsPlatformAccessory {
     this.log('Set Fan Characteristic On ->', value);
     this.states.fanOn = value > 0;
     this.states.fanSpeed = Math.round(value as number / 100 * NUMBER_OF_FAN_SPEEDS);
-    this.sendUpdate();
+    this.sendDelayedUpdate();
   }
 
   // LIGHT GETTERS / SETTERS
@@ -184,6 +188,6 @@ export class ModernFormsPlatformAccessory {
     this.log('Set Characteristic Brightness -> ', value);
     this.states.lightOn = value > 0;
     this.states.lightBrightness = value as number;
-    this.sendUpdate();
+    this.sendDelayedUpdate();
   }
 }

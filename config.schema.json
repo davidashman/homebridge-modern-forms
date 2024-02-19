@@ -16,7 +16,7 @@
         "title": "Polling Interval",
         "description": "Defines how often (in seconds) fans are queried for state on the network.",
         "type": "number",
-        "default": 15,
+        "default": 5,
         "required": false
       },
       "mqttUrl": {
